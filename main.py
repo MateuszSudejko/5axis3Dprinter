@@ -1,41 +1,63 @@
 from stl_importer import STLImporter
 from stl_validator import STLValidator
+from slicer import PlanarSlicer
 import argparse
+from visualizer import visualize_slices
+from toolpath_generator import ToolpathGenerator
+from orientation_calculator import OrientationCalculator
+from kinematics import InverseKinematics
+from gcode_generator import GcodeGenerator
 
 
 def main():
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='STL Import and Validation for 5-Axis 3D Printing')
-    parser.add_argument('filename', help='Path to the STL file')
+    parser = argparse.ArgumentParser(description='5-Axis Slicer - Phase 1')
+    parser.add_argument('filename', help='Path to STL file')
+    parser.add_argument('--layer-height', type=float, default=0.2,
+                       help='Layer height in mm')
+    parser.add_argument('--output', default='slices.txt',
+                       help='Output filename for slices')
     args = parser.parse_args()
 
-    # Create importer and load STL
+    # STL Import & Validation
     importer = STLImporter(args.filename)
     if not importer.load_stl():
-        print("Failed to load STL file. Exiting.")
         return
 
-    # Print mesh statistics
-    stats = importer.get_mesh_stats()
-    print("\nMesh Statistics:")
-    print(f"  Facets: {stats['facet_count']}")
-    print(f"  Vertices: {stats['vertex_count']}")
-    print(f"  Dimensions:")
-    print(f"    X: {stats['dimensions']['x'][0]:.2f} to {stats['dimensions']['x'][1]:.2f}")
-    print(f"    Y: {stats['dimensions']['y'][0]:.2f} to {stats['dimensions']['y'][1]:.2f}")
-    print(f"    Z: {stats['dimensions']['z'][0]:.2f} to {stats['dimensions']['z'][1]:.2f}")
-    print(f"  Volume: {stats['volume']:.2f} cubic units")
-
-    # Validate the mesh
     validator = STLValidator(importer)
-    is_valid = validator.validate_mesh()
+    if not validator.validate_mesh():
+        return
 
-    # Final result
-    if is_valid:
-        print("\nSTL file is valid and ready for slicing.")
-    else:
-        print("\nSTL file has validation issues that may affect printing.")
+    # Planar Slicing
+    try:
+        slicer = PlanarSlicer(importer, args.layer_height)
+        slicer.slice()
+        slicer.export_contours(args.output)
+        print(f"\nSuccessfully generated {len(slicer.layers)} layers")
+        print(f"Slice data saved to {args.output}")
+    except Exception as e:
+        print(f"\nSlicing failed: {e}")
 
+    visualize_slices(slicer.layers)
+
+    # Generate toolpaths
+    toolpath_gen = ToolpathGenerator(slicer)
+    toolpaths = toolpath_gen.generate_toolpaths()
+    print(f"Generated toolpaths for {len(toolpaths)} layers")
+
+    # Calculate nozzle orientations
+    orientation_calc = OrientationCalculator(importer, toolpaths)
+    oriented_paths = orientation_calc.calculate_orientations()
+
+    # Calculate 5-axis positions
+    kinematics = InverseKinematics(oriented_paths)
+    gcode_paths = kinematics.calculate_axis_positions()
+
+    # Generate G-code
+    gcode_gen = GcodeGenerator(gcode_paths)
+    gcode = gcode_gen.generate_gcode()
+    gcode_file = args.filename.replace('.stl', '.gcode')
+    gcode_gen.save_gcode(gcode_file)
+    print(f"G-code saved to {gcode_file}")
 
 if __name__ == "__main__":
     main()
